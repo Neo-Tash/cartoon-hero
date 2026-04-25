@@ -9,69 +9,97 @@ import os
 
 app = FastAPI()
 
-# ✅ CORS (Frontend connection fix)
+# ✅ CORS (CRITICAL FOR FRONTEND CONNECTION)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=False,
+    allow_origin_regex=".*",
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ✅ Root route (optional health check)
+# ✅ HEALTH CHECK
 @app.get("/")
 async def root():
     return {"message": "SlickCoherence Audio Analysis API is running"}
 
-# ✅ ANALYZE ENDPOINT (THIS ENABLES FILE UPLOAD IN SWAGGER)
+# ✅ ANALYZE ENDPOINT
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
     try:
-        # Read uploaded file
+        # 📥 Read uploaded file
         contents = await file.read()
 
-        # Save to temp file
+        # 💾 Save to temp file
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
             tmp.write(contents)
             tmp_path = tmp.name
 
-        # Load audio
+        # 🎧 Load audio
         y, sr = librosa.load(tmp_path, sr=None)
 
-        # 🔹 Tempo
+        # 🥁 Tempo
         tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
 
-        # 🔹 Duration
+        # ⏱ Duration
         duration = librosa.get_duration(y=y, sr=sr)
 
-        # 🔹 Energy
+        # 🔊 RMS Energy
         rms = np.mean(librosa.feature.rms(y=y))
 
-        # 🔹 Spectral Features
+        # 🌈 Spectral Features
         centroid = np.mean(librosa.feature.spectral_centroid(y=y, sr=sr))
         rolloff = np.mean(librosa.feature.spectral_rolloff(y=y, sr=sr))
 
-        # 🔹 Key Detection
+        # 🎼 Key Detection
         chroma = librosa.feature.chroma_stft(y=y, sr=sr)
         key_index = np.argmax(np.mean(chroma, axis=1))
-
-        keys = ['C', 'C#', 'D', 'D#', 'E', 'F',
-                'F#', 'G', 'G#', 'A', 'A#', 'B']
-
+        keys = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
         key = keys[key_index]
 
-        # Clean up temp file
+        # 🧠 SIMPLE AI LOGIC (PLACEHOLDER — CAN UPGRADE LATER)
+        if tempo < 90:
+            genre = "Ambient / Chill"
+            mood = "Calm"
+        elif tempo < 115:
+            genre = "House / Afro"
+            mood = "Groovy"
+        else:
+            genre = "Dance / Electronic"
+            mood = "Energetic"
+
+        vocal_type = "Instrumental" if rms < 0.05 else "Vocal"
+
+        if tempo > 120:
+            drum_style = "Trap"
+        elif 100 <= tempo <= 120:
+            drum_style = "Amapiano / House"
+        else:
+            drum_style = "Slow Groove"
+
+        mix_suggestion = f"Try mixing with tracks between {int(tempo)-5}-{int(tempo)+5} BPM in key {key}"
+
+        # 🧹 Clean up temp file
         os.remove(tmp_path)
 
-        return {
+        # ✅ RESPONSE
+        return JSONResponse(content={
             "success": True,
             "bpm": round(float(tempo)),
             "key": key,
-            "duration": round(float(duration), 2),
+            "duration": round(duration, 2),
             "rms_energy": round(float(rms), 4),
             "spectral_centroid": round(float(centroid), 2),
-            "spectral_rolloff": round(float(rolloff), 2)
-        }
+            "spectral_rolloff": round(float(rolloff), 2),
+
+            # 🔥 AI FIELDS (NOW YOUR UI WILL POPULATE)
+            "ai_genre": genre,
+            "mood": mood,
+            "vocal_type": vocal_type,
+            "drum_style": drum_style,
+            "mix_suggestion": mix_suggestion
+        })
 
     except Exception as e:
         return JSONResponse(
