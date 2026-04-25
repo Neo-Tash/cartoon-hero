@@ -1,6 +1,14 @@
-fastapi
-uvicorn
-librosa
-numpy
-soundfile
-python-multipart
+fastapi==0.110.0
+uvicorn==0.29.0
+
+numpy==1.26.4
+scipy==1.12.0
+librosa==0.10.1
+
+soundfile==0.12.1
+
+python-multipart==0.0.9
+
+# --- AI MODEL (YAMNet) ---
+tensorflow-cpu==2.15.0
+tensorflow-hub==0.16.1
