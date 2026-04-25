@@ -1,4 +1,5 @@
 from fastapi import FastAPI, UploadFile, File
+from fastapi.responses import JSONResponse
 import librosa
 import numpy as np
 import tempfile
@@ -12,7 +13,6 @@ async def analyze(file: UploadFile = File(...)):
             temp.write(await file.read())
             temp_path = temp.name
 
-        # Load audio safely
         y, sr = librosa.load(temp_path, sr=None)
 
         tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
@@ -26,16 +26,18 @@ async def analyze(file: UploadFile = File(...)):
         keys = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
         key = keys[key_index]
 
-        return {
+        return JSONResponse(content={
+            "success": True,
             "bpm": round(float(tempo)),
             "key": key,
             "duration": round(duration, 2),
             "rms_energy": round(float(rms), 4),
             "spectral_centroid": round(float(centroid), 2),
             "spectral_rolloff": round(float(rolloff), 2)
-        }
+        })
 
     except Exception as e:
-        return {
+        return JSONResponse(content={
+            "success": False,
             "error": str(e)
-        }
+        }, status_code=200)
