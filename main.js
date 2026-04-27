@@ -20,14 +20,17 @@ app.get('/hcgi/api/auth/test', (req, res) => {
   res.json({ status: 'auth working' });
 });
 
-// Basic login route (temporary)
+// 🔐 FIXED LOGIN ROUTE
 app.post('/hcgi/api/auth/login', (req, res) => {
   const { email, password } = req.body;
 
   if (email === 'admin@slickcoherence.com' && password === 'AdminSlick2024!') {
     return res.json({
-      success: true,
-      user: { email, role: 'admin' }
+      token: "demo-token-123", // ✅ THIS FIXES YOUR ERROR
+      user: {
+        email,
+        role: 'admin'
+      }
     });
   }
 
