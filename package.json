@@ -1,6 +1,7 @@
 {
   "name": "slickcoherence-api",
   "version": "1.0.0",
+  "type": "module",
   "main": "apps/api/src/main.js",
   "scripts": {
     "start": "node apps/api/src/main.js"
