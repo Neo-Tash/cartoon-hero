@@ -1,9 +1,18 @@
 import express from "express";
 import cors from "cors";
 import multer from "multer";
+import { createClient } from "@supabase/supabase-js";
 
 const app = express();
 const upload = multer({ dest: "uploads/" });
+
+/* =========================
+   SUPABASE CONNECTION
+========================= */
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_ANON_KEY
+);
 
 /* =========================
    MIDDLEWARE
@@ -17,12 +26,6 @@ app.use(cors({
 app.use(express.json());
 
 /* =========================
-   TEMP IN-MEMORY STORAGE
-   (Will reset on restart)
-========================= */
-let analyses = [];
-
-/* =========================
    HEALTH CHECK
 ========================= */
 app.get("/api/health", (req, res) => {
@@ -30,17 +33,15 @@ app.get("/api/health", (req, res) => {
 });
 
 /* =========================
-   LOGIN
+   LOGIN (TEMP)
 ========================= */
 app.post("/api/login", (req, res) => {
   const { email, password } = req.body;
 
-  // TEMP LOGIN (replace later with real auth)
   if (email === "admin@slickcoherence.com" && password === "password123") {
     return res.json({
       token: "demo-token-123",
       user: {
-        id: email, // used as userId
         email,
         username: "Admin"
       }
@@ -53,81 +54,116 @@ app.post("/api/login", (req, res) => {
 });
 
 /* =========================
-   ANALYZE
+   ANALYZE + SAVE TO DB
 ========================= */
-app.post("/api/analyze", upload.single("file"), (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: "No file uploaded" });
-  }
+app.post("/api/analyze", upload.single("file"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "No file uploaded" });
+    }
 
-  // Fake analysis (replace later with real engine)
-  res.json({
-    success: true,
-    filename: req.file.originalname,
-    size: req.file.size,
-    analysis: {
+    // 🔥 FAKE ANALYSIS (for now)
+    const analysis = {
       bpm: 120,
       key: "A Minor",
       energy: 0.82,
       loudness: -6.5
-    }
-  });
-});
-
-/* =========================
-   SAVE ANALYSIS
-========================= */
-app.post("/api/save-analysis", (req, res) => {
-  try {
-    const { userId, filename, analysis } = req.body;
-
-    if (!userId || !analysis) {
-      return res.status(400).json({ error: "Missing data" });
-    }
-
-    const newAnalysis = {
-      id: Date.now().toString(),
-      userId,
-      filename,
-      bpm: analysis.bpm,
-      key: analysis.key,
-      energy: analysis.energy,
-      full: analysis,
-      createdAt: new Date().toISOString()
     };
 
-    analyses.push(newAnalysis);
+    // 🔥 USER IDENTIFIER (simple version)
+    const userId = req.headers.authorization || "guest";
 
+    /* =========================
+       SAVE ANALYSIS
+    ========================= */
+    const { error: saveError } = await supabase
+      .from("analyses")
+      .insert([
+        {
+          user_id: userId,
+          filename: req.file.originalname,
+          bpm: analysis.bpm,
+          key: analysis.key,
+          energy: analysis.energy,
+          analysis_data: analysis
+        }
+      ]);
+
+    if (saveError) {
+      console.error("SUPABASE SAVE ERROR:", saveError);
+      return res.status(500).json({ error: saveError.message });
+    }
+
+    /* =========================
+       LOG ACTIVITY
+    ========================= */
+    await supabase.from("activities").insert([
+      {
+        user_id: userId,
+        action: "analyze",
+        metadata: {
+          filename: req.file.originalname
+        }
+      }
+    ]);
+
+    /* =========================
+       RESPONSE
+    ========================= */
     res.json({
       success: true,
-      data: newAnalysis
+      filename: req.file.originalname,
+      analysis
     });
 
   } catch (err) {
-    res.status(500).json({
-      error: "Failed to save analysis"
-    });
+    console.error("SERVER ERROR:", err);
+    res.status(500).json({ error: "Analysis failed" });
   }
 });
 
 /* =========================
    GET USER ANALYSES
 ========================= */
-app.get("/api/my-analyses/:userId", (req, res) => {
+app.get("/api/my-analyses/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
 
-    const userAnalyses = analyses.filter(a => a.userId === userId);
+    const { data, error } = await supabase
+      .from("analyses")
+      .select("*")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false });
 
-    res.json({
-      success: true,
-      data: userAnalyses
-    });
+    if (error) throw error;
+
+    res.json({ success: true, data });
 
   } catch (err) {
-    res.status(500).json({
-      error: "Failed to fetch analyses"
-    });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* =========================
+   GET ACTIVITY
+========================= */
+app.get("/api/activity/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const { data, error } = await supabase
+      .from("activities")
+      .select("*")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false })
+      .limit(10);
+
+    if (error) throw error;
+
+    res.json({ success: true, data });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
