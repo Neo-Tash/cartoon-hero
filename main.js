@@ -69,7 +69,32 @@ app.post('/hcgi/api/auth/login', (req, res) => {
 });
 
 /* =========================
-   ✅ ANALYZE ROUTE (FIXES YOUR ERROR)
+   ✅ AUTH VERIFY (FIXES YOUR ERROR)
+========================= */
+app.get('/hcgi/api/auth/me', (req, res) => {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader) {
+    return res.status(401).json({ error: 'No token provided' });
+  }
+
+  const token = authHeader.split(' ')[1];
+
+  if (token === 'demo-token-123') {
+    return res.json({
+      success: true,
+      user: {
+        email: 'admin@slickcoherence.com',
+        role: 'admin'
+      }
+    });
+  }
+
+  return res.status(401).json({ error: 'Invalid token' });
+});
+
+/* =========================
+   ✅ ANALYZE ROUTE
 ========================= */
 app.post('/hcgi/api/analyze', upload.single('file'), (req, res) => {
   try {
@@ -77,7 +102,7 @@ app.post('/hcgi/api/analyze', upload.single('file'), (req, res) => {
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    // 🔥 TEMP MOCK ANALYSIS (we upgrade later)
+    // 🔥 TEMP MOCK ANALYSIS (replace later with real AI/audio processing)
     const result = {
       success: true,
       fileName: req.file.originalname,
