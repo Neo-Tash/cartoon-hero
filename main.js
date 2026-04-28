@@ -1,132 +1,119 @@
 import express from 'express';
 import cors from 'cors';
-import morgan from 'morgan';
 import multer from 'multer';
 
 const app = express();
-const PORT = process.env.PORT || 3000;
 
-/* =========================
-   ✅ CORS FIX (CRITICAL)
-========================= */
+// =========================
+// ✅ CORS CONFIG (VERY IMPORTANT)
+// =========================
 app.use(cors({
-  origin: 'https://slickcoherence.com',
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  origin: [
+    'https://slickcoherence.com',
+    'http://localhost:3000'
+  ],
+  methods: ['GET', 'POST'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
 }));
 
-app.options('*', cors({
-  origin: 'https://slickcoherence.com',
-  credentials: true
-}));
-
-/* =========================
-   ✅ MIDDLEWARE
-========================= */
+// =========================
+// ✅ MIDDLEWARE
+// =========================
 app.use(express.json());
-app.use(morgan('dev'));
 
-/* =========================
-   ✅ FILE UPLOAD SETUP
-========================= */
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024 } // 50MB
-});
+// =========================
+// ✅ FILE UPLOAD SETUP
+// =========================
+const storage = multer.memoryStorage();
+const upload = multer({ storage });
 
-/* =========================
-   ✅ HEALTH CHECK
-========================= */
-app.get('/hcgi/api/health', (req, res) => {
+// =========================
+// ✅ HEALTH CHECK ROUTE
+// =========================
+app.get('/api/health', (req, res) => {
   res.json({ status: 'ok' });
 });
 
-/* =========================
-   ✅ AUTH TEST
-========================= */
-app.get('/hcgi/api/auth/test', (req, res) => {
-  res.json({ status: 'auth working' });
-});
-
-/* =========================
-   ✅ LOGIN ROUTE
-========================= */
-app.post('/hcgi/api/auth/login', (req, res) => {
+// =========================
+// ✅ LOGIN ROUTE (TEMP BASIC)
+// =========================
+app.post('/api/login', (req, res) => {
   const { email, password } = req.body;
 
-  if (email === 'admin@slickcoherence.com' && password === 'AdminSlick2024!') {
+  // TEMP LOGIN (you can replace later with real auth)
+  if (email === 'admin@slickcoherence.com' && password === 'password123') {
     return res.json({
       success: true,
-      token: 'demo-token-123',
-      user: {
-        email,
-        role: 'admin'
-      }
+      token: 'demo-token-123'
     });
   }
 
-  return res.status(401).json({ error: 'Invalid credentials' });
+  res.status(401).json({
+    success: false,
+    error: 'Invalid credentials'
+  });
 });
 
-/* =========================
-   ✅ AUTH VERIFY (FIXES YOUR ERROR)
-========================= */
-app.get('/hcgi/api/auth/me', (req, res) => {
-  const authHeader = req.headers.authorization;
-
-  if (!authHeader) {
-    return res.status(401).json({ error: 'No token provided' });
-  }
-
-  const token = authHeader.split(' ')[1];
-
-  if (token === 'demo-token-123') {
-    return res.json({
-      success: true,
-      user: {
-        email: 'admin@slickcoherence.com',
-        role: 'admin'
-      }
-    });
-  }
-
-  return res.status(401).json({ error: 'Invalid token' });
-});
-
-/* =========================
-   ✅ ANALYZE ROUTE
-========================= */
-app.post('/hcgi/api/analyze', upload.single('file'), (req, res) => {
+// =========================
+// ✅ ANALYZE ROUTE
+// =========================
+app.post('/api/analyze', upload.single('file'), (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded' });
+      return res.status(400).json({
+        success: false,
+        error: 'No file uploaded'
+      });
     }
 
-    // 🔥 TEMP MOCK ANALYSIS (replace later with real AI/audio processing)
-    const result = {
-      success: true,
-      fileName: req.file.originalname,
-      size: req.file.size,
-      analysis: {
-        bpm: 124,
-        key: 'A Minor',
-        energy: 'Medium',
-        duration: '3:45',
-        message: 'Analysis complete (mock data)'
-      }
+    console.log('🎧 File received:', req.file.originalname);
+
+    // 🔥 MOCK ANALYSIS (replace later with real AI)
+    const analysis = {
+      bpm: 128,
+      key: 'A Minor',
+      energy: 0.82,
+      duration: 180,
+      loudness: -6.5,
+      genre: 'Amapiano / House',
+      mood: 'Energetic',
     };
 
-    return res.json(result);
+    res.json({
+      success: true,
+      filename: req.file.originalname,
+      size: req.file.size,
+      analysis
+    });
 
   } catch (error) {
-    console.error('Analyze error:', error);
-    return res.status(500).json({ error: 'Analysis failed' });
+    console.error('❌ Analyze error:', error);
+
+    res.status(500).json({
+      success: false,
+      error: 'Analysis failed'
+    });
   }
 });
 
-/* =========================
-   ✅ START SERVER
-========================= */
+// =========================
+// ✅ DEFAULT ROUTE (IMPORTANT)
+// =========================
+app.get('/', (req, res) => {
+  res.send('SlickCoherence API is running 🚀');
+});
+
+// =========================
+// ❌ REMOVE ANY OLD /hcgi ROUTES (DO NOT ADD THEM)
+// =========================
+
+
+// =========================
+// ✅ START SERVER
+// =========================
+const PORT = process.env.PORT || 3000;
+
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
