@@ -54,13 +54,22 @@ app.post("/api/login", (req, res) => {
 });
 
 /* =========================
-   ANALYZE + SAVE TO DB
+   ANALYZE + SAVE TO DB (FIXED)
 ========================= */
 app.post("/api/analyze", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: "No file uploaded" });
     }
+
+    // 🔥 REQUIRE USER ID (NO MORE GUEST)
+    const userId = req.headers.authorization;
+
+    if (!userId) {
+      return res.status(401).json({ error: "Missing user identity" });
+    }
+
+    console.log("Saving analysis for user:", userId);
 
     // 🔥 FAKE ANALYSIS (for now)
     const analysis = {
@@ -69,9 +78,6 @@ app.post("/api/analyze", upload.single("file"), async (req, res) => {
       energy: 0.82,
       loudness: -6.5
     };
-
-    // 🔥 USER IDENTIFIER (simple version)
-    const userId = req.headers.authorization || "guest";
 
     /* =========================
        SAVE ANALYSIS
@@ -97,15 +103,21 @@ app.post("/api/analyze", upload.single("file"), async (req, res) => {
     /* =========================
        LOG ACTIVITY
     ========================= */
-    await supabase.from("activities").insert([
-      {
-        user_id: userId,
-        action: "analyze",
-        metadata: {
-          filename: req.file.originalname
+    const { error: activityError } = await supabase
+      .from("activities")
+      .insert([
+        {
+          user_id: userId,
+          action: "analyze",
+          metadata: {
+            filename: req.file.originalname
+          }
         }
-      }
-    ]);
+      ]);
+
+    if (activityError) {
+      console.error("ACTIVITY SAVE ERROR:", activityError);
+    }
 
     /* =========================
        RESPONSE
@@ -129,17 +141,23 @@ app.get("/api/my-analyses/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
 
+    console.log("Fetching analyses for:", userId);
+
     const { data, error } = await supabase
       .from("analyses")
       .select("*")
       .eq("user_id", userId)
       .order("created_at", { ascending: false });
 
-    if (error) throw error;
+    if (error) {
+      console.error("FETCH ERROR:", error);
+      return res.status(500).json({ error: error.message });
+    }
 
     res.json({ success: true, data });
 
   } catch (err) {
+    console.error("SERVER ERROR:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -151,6 +169,8 @@ app.get("/api/activity/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
 
+    console.log("Fetching activity for:", userId);
+
     const { data, error } = await supabase
       .from("activities")
       .select("*")
@@ -158,11 +178,15 @@ app.get("/api/activity/:userId", async (req, res) => {
       .order("created_at", { ascending: false })
       .limit(10);
 
-    if (error) throw error;
+    if (error) {
+      console.error("ACTIVITY FETCH ERROR:", error);
+      return res.status(500).json({ error: error.message });
+    }
 
     res.json({ success: true, data });
 
   } catch (err) {
+    console.error("SERVER ERROR:", err);
     res.status(500).json({ error: err.message });
   }
 });
