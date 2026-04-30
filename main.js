@@ -25,6 +25,9 @@ app.use(cors({
 
 app.use(express.json());
 
+// ✅ STEP 1 FIX: SERVE UPLOADED FILES
+app.use("/uploads", express.static("uploads"));
+
 /* =========================
    HEALTH CHECK
 ========================= */
@@ -54,7 +57,7 @@ app.post("/api/login", (req, res) => {
 });
 
 /* =========================
-   ANALYZE + SAVE TO DB (FIXED)
+   ANALYZE + SAVE TO DB
 ========================= */
 app.post("/api/analyze", upload.single("file"), async (req, res) => {
   try {
@@ -62,7 +65,6 @@ app.post("/api/analyze", upload.single("file"), async (req, res) => {
       return res.status(400).json({ error: "No file uploaded" });
     }
 
-    // 🔥 REQUIRE USER ID (NO MORE GUEST)
     const userId = req.headers.authorization;
 
     if (!userId) {
@@ -71,7 +73,6 @@ app.post("/api/analyze", upload.single("file"), async (req, res) => {
 
     console.log("Saving analysis for user:", userId);
 
-    // 🔥 FAKE ANALYSIS (for now)
     const analysis = {
       bpm: 120,
       key: "A Minor",
@@ -79,9 +80,6 @@ app.post("/api/analyze", upload.single("file"), async (req, res) => {
       loudness: -6.5
     };
 
-    /* =========================
-       SAVE ANALYSIS
-    ========================= */
     const { error: saveError } = await supabase
       .from("analyses")
       .insert([
@@ -100,9 +98,6 @@ app.post("/api/analyze", upload.single("file"), async (req, res) => {
       return res.status(500).json({ error: saveError.message });
     }
 
-    /* =========================
-       LOG ACTIVITY
-    ========================= */
     const { error: activityError } = await supabase
       .from("activities")
       .insert([
@@ -119,9 +114,6 @@ app.post("/api/analyze", upload.single("file"), async (req, res) => {
       console.error("ACTIVITY SAVE ERROR:", activityError);
     }
 
-    /* =========================
-       RESPONSE
-    ========================= */
     res.json({
       success: true,
       filename: req.file.originalname,
