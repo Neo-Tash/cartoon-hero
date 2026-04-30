@@ -79,7 +79,7 @@ app.post("/api/analyze", upload.single("file"), async (req, res) => {
       energy: 0.82,
       loudness: -6.5
     };
-
+    const fileUrl = `https://cartoon-hero-production.up.railway.app/uploads/${req.file.filename}`;
     const { error: saveError } = await supabase
       .from("analyses")
       .insert([
@@ -89,7 +89,8 @@ app.post("/api/analyze", upload.single("file"), async (req, res) => {
           bpm: analysis.bpm,
           key: analysis.key,
           energy: analysis.energy,
-          analysis_data: analysis
+          analysis_data: analysis,
+          file_url: fileUrl
         }
       ]);
 
