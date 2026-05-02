@@ -128,7 +128,7 @@ app.get("/api/activity/:userId", async (req, res) => {
    AI DJ CLOUD ENGINE
 ========================= */
 
-/* 1️⃣ LOG MIX */
+/* 🎧 1. LOG MIX */
 app.post("/api/log-mix", async (req, res) => {
   try {
     const { userId, fromTrack, toTrack } = req.body;
@@ -161,7 +161,7 @@ app.post("/api/log-mix", async (req, res) => {
   }
 });
 
-/* 2️⃣ USER PREFERENCES */
+/* 🧠 2. USER PREFERENCES ENGINE */
 const getUserPreferences = async (userId) => {
   const { data } = await supabase
     .from("mix_history")
@@ -187,7 +187,7 @@ const getUserPreferences = async (userId) => {
   };
 };
 
-/* 3️⃣ AI SUGGEST */
+/* 🤖 3. AI TRACK SUGGESTION */
 app.post("/api/ai-suggest", async (req, res) => {
   try {
     const { userId, currentTrack, library } = req.body;
@@ -228,7 +228,7 @@ app.post("/api/ai-suggest", async (req, res) => {
   }
 });
 
-/* 4️⃣ UPDATE PREFERENCES */
+/* 📊 4. UPDATE AI PREFERENCES */
 app.post("/api/update-preferences", async (req, res) => {
   try {
     const { userId } = req.body;
@@ -264,7 +264,7 @@ app.post("/api/update-preferences", async (req, res) => {
   }
 });
 
-/* 5️⃣ USER STATS */
+/* 📈 5. USER STATS */
 app.get("/api/user-stats/:userId", async (req, res) => {
   try {
     const { data } = await supabase
