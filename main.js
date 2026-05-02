@@ -130,25 +130,35 @@ app.get("/api/activity/:userId", async (req, res) => {
 
 /* 1️⃣ LOG MIX */
 app.post("/api/log-mix", async (req, res) => {
-  const { userId, fromTrack, toTrack } = req.body;
+  try {
+    const { userId, fromTrack, toTrack } = req.body;
 
-  const bpmDiff = Math.abs(fromTrack.bpm - toTrack.bpm);
-  const energyDiff = toTrack.energy - fromTrack.energy;
-  const keyMatch = fromTrack.key === toTrack.key;
+    if (!userId || !fromTrack || !toTrack) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
 
-  const { error } = await supabase.from("mix_history").insert([{
-    user_id: userId,
-    from_track: fromTrack.id,
-    to_track: toTrack.id,
-    bpm_diff: bpmDiff,
-    energy_diff: energyDiff,
-    key_match: keyMatch,
-    timing: "on_phrase"
-  }]);
+    const bpmDiff = Math.abs((fromTrack.bpm || 120) - (toTrack.bpm || 120));
+    const energyDiff = (toTrack.energy || 0.5) - (fromTrack.energy || 0.5);
+    const keyMatch = (fromTrack.key || "") === (toTrack.key || "");
 
-  if (error) return res.status(500).json({ error: error.message });
+    const { error } = await supabase.from("mix_history").insert([{
+      user_id: userId,
+      from_track: fromTrack.id || fromTrack,
+      to_track: toTrack.id || toTrack,
+      bpm_diff: bpmDiff,
+      energy_diff: energyDiff,
+      key_match: keyMatch,
+      timing: "on_phrase"
+    }]);
 
-  res.json({ success: true });
+    if (error) throw error;
+
+    res.json({ success: true });
+
+  } catch (err) {
+    console.error("log-mix error:", err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 /* 2️⃣ USER PREFERENCES */
@@ -165,13 +175,13 @@ const getUserPreferences = async (userId) => {
   let totalBpm = 0, totalEnergy = 0, keyMatches = 0;
 
   data.forEach(d => {
-    totalBpm += d.bpm_diff;
-    totalEnergy += d.energy_diff;
+    totalBpm += d.bpm_diff || 0;
+    totalEnergy += d.energy_diff || 0;
     if (d.key_match) keyMatches++;
   });
 
   return {
-    bpmTolerance: totalBpm / data.length + 2,
+    bpmTolerance: (totalBpm / data.length) + 2,
     energyBias: totalEnergy / data.length,
     keyStrictness: keyMatches / data.length
   };
@@ -179,89 +189,112 @@ const getUserPreferences = async (userId) => {
 
 /* 3️⃣ AI SUGGEST */
 app.post("/api/ai-suggest", async (req, res) => {
-  const { userId, currentTrack, library } = req.body;
+  try {
+    const { userId, currentTrack, library } = req.body;
 
-  const prefs = await getUserPreferences(userId);
-
-  let best = null;
-  let bestScore = -1;
-
-  library.forEach(track => {
-    if (track.id === currentTrack.id) return;
-
-    const bpmDiff = Math.abs(currentTrack.bpm - track.bpm);
-    const energyDiff = track.energy - currentTrack.energy;
-    const keyMatch = currentTrack.key === track.key;
-
-    let score = 0;
-
-    score += bpmDiff < prefs.bpmTolerance ? 1 : 0.5;
-    score += (prefs.energyBias > 0 ? (energyDiff >= 0 ? 1 : 0.5) : 0.8);
-    score += keyMatch ? prefs.keyStrictness : 0.3;
-
-    if (score > bestScore) {
-      bestScore = score;
-      best = track;
+    if (!userId || !currentTrack || !library) {
+      return res.status(400).json({ error: "Missing required fields" });
     }
-  });
 
-  res.json({ success: true, suggestion: best, confidence: bestScore });
+    const prefs = await getUserPreferences(userId);
+
+    let best = null;
+    let bestScore = -1;
+
+    library.forEach(track => {
+      if (!track || track.id === currentTrack.id) return;
+
+      const bpmDiff = Math.abs((currentTrack.bpm || 120) - (track.bpm || 120));
+      const energyDiff = (track.energy || 0.5) - (currentTrack.energy || 0.5);
+      const keyMatch = currentTrack.key === track.key;
+
+      let score = 0;
+
+      score += bpmDiff < prefs.bpmTolerance ? 1 : 0.5;
+      score += (prefs.energyBias > 0 ? (energyDiff >= 0 ? 1 : 0.5) : 0.8);
+      score += keyMatch ? prefs.keyStrictness : 0.3;
+
+      if (score > bestScore) {
+        bestScore = score;
+        best = track;
+      }
+    });
+
+    res.json({ success: true, suggestion: best, confidence: bestScore });
+
+  } catch (err) {
+    console.error("ai-suggest error:", err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 /* 4️⃣ UPDATE PREFERENCES */
 app.post("/api/update-preferences", async (req, res) => {
-  const { userId } = req.body;
-  const prefs = await getUserPreferences(userId);
+  try {
+    const { userId } = req.body;
 
-  const { data: existing } = await supabase
-    .from("ai_preferences")
-    .select("*")
-    .eq("user_id", userId)
-    .single();
+    const prefs = await getUserPreferences(userId);
 
-  if (existing) {
-    await supabase.from("ai_preferences").update({
-      bpm_tolerance: prefs.bpmTolerance,
-      energy_bias: prefs.energyBias,
-      key_strictness: prefs.keyStrictness
-    }).eq("user_id", userId);
-  } else {
-    await supabase.from("ai_preferences").insert([{
-      user_id: userId,
-      bpm_tolerance: prefs.bpmTolerance,
-      energy_bias: prefs.energyBias,
-      key_strictness: prefs.keyStrictness
-    }]);
+    const { data: existing } = await supabase
+      .from("ai_preferences")
+      .select("*")
+      .eq("user_id", userId)
+      .single();
+
+    if (existing) {
+      await supabase.from("ai_preferences").update({
+        bpm_tolerance: prefs.bpmTolerance,
+        energy_bias: prefs.energyBias,
+        key_strictness: prefs.keyStrictness
+      }).eq("user_id", userId);
+    } else {
+      await supabase.from("ai_preferences").insert([{
+        user_id: userId,
+        bpm_tolerance: prefs.bpmTolerance,
+        energy_bias: prefs.energyBias,
+        key_strictness: prefs.keyStrictness
+      }]);
+    }
+
+    res.json({ success: true, preferences: prefs });
+
+  } catch (err) {
+    console.error("update-preferences error:", err);
+    res.status(500).json({ error: err.message });
   }
-
-  res.json({ success: true, preferences: prefs });
 });
 
 /* 5️⃣ USER STATS */
 app.get("/api/user-stats/:userId", async (req, res) => {
-  const { data } = await supabase
-    .from("mix_history")
-    .select("*")
-    .eq("user_id", req.params.userId);
+  try {
+    const { data } = await supabase
+      .from("mix_history")
+      .select("*")
+      .eq("user_id", req.params.userId);
 
-  if (!data || !data.length) {
-    return res.json({ totalMixes: 0 });
+    if (!data || !data.length) {
+      return res.json({ totalMixes: 0 });
+    }
+
+    let totalBpm = 0, totalEnergy = 0, keyMatches = 0;
+
+    data.forEach(m => {
+      totalBpm += m.bpm_diff || 0;
+      totalEnergy += m.energy_diff || 0;
+      if (m.key_match) keyMatches++;
+    });
+
+    res.json({
+      totalMixes: data.length,
+      avgBpmDiff: totalBpm / data.length,
+      avgEnergyDiff: totalEnergy / data.length,
+      keyMatchRate: keyMatches / data.length
+    });
+
+  } catch (err) {
+    console.error("user-stats error:", err);
+    res.status(500).json({ error: err.message });
   }
-
-  let totalBpm = 0, totalEnergy = 0, keyMatches = 0;
-
-  data.forEach(m => {
-    totalBpm += m.bpm_diff;
-    totalEnergy += m.energy_diff;
-    if (m.key_match) keyMatches++;
-  });
-
-  res.json({
-    totalMixes: data.length,
-    avgBpmDiff: totalBpm / data.length,
-    avgEnergyDiff: totalEnergy / data.length,
-    keyMatchRate: keyMatches / data.length
-  });
 });
 
 /* =========================
