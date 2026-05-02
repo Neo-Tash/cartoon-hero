@@ -24,8 +24,6 @@ app.use(cors({
 }));
 
 app.use(express.json());
-
-// ✅ STEP 1 FIX: SERVE UPLOADED FILES
 app.use("/uploads", express.static("uploads"));
 
 /* =========================
@@ -44,34 +42,22 @@ app.post("/api/login", (req, res) => {
   if (email === "admin@slickcoherence.com" && password === "password123") {
     return res.json({
       token: "demo-token-123",
-      user: {
-        email,
-        username: "Admin"
-      }
+      user: { email, username: "Admin" }
     });
   }
 
-  return res.status(401).json({
-    error: "Invalid credentials"
-  });
+  return res.status(401).json({ error: "Invalid credentials" });
 });
 
 /* =========================
-   ANALYZE + SAVE TO DB
+   ANALYZE + SAVE
 ========================= */
 app.post("/api/analyze", upload.single("file"), async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: "No file uploaded" });
-    }
+    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
     const userId = req.headers.authorization;
-
-    if (!userId) {
-      return res.status(401).json({ error: "Missing user identity" });
-    }
-
-    console.log("Saving analysis for user:", userId);
+    if (!userId) return res.status(401).json({ error: "Missing user identity" });
 
     const analysis = {
       bpm: 120,
@@ -79,109 +65,203 @@ app.post("/api/analyze", upload.single("file"), async (req, res) => {
       energy: 0.82,
       loudness: -6.5
     };
-    const fileUrl = `https://cartoon-hero-production.up.railway.app/uploads/${req.file.filename}`;
-    const { error: saveError } = await supabase
-      .from("analyses")
-      .insert([
-        {
-          user_id: userId,
-          filename: req.file.originalname,
-          bpm: analysis.bpm,
-          key: analysis.key,
-          energy: analysis.energy,
-          analysis_data: analysis,
-          file_url: fileUrl
-        }
-      ]);
 
-    if (saveError) {
-      console.error("SUPABASE SAVE ERROR:", saveError);
-      return res.status(500).json({ error: saveError.message });
-    }
+    const fileUrl = `${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`;
 
-    const { error: activityError } = await supabase
-      .from("activities")
-      .insert([
-        {
-          user_id: userId,
-          action: "analyze",
-          metadata: {
-            filename: req.file.originalname
-          }
-        }
-      ]);
-
-    if (activityError) {
-      console.error("ACTIVITY SAVE ERROR:", activityError);
-    }
-
-    res.json({
-      success: true,
+    const { error } = await supabase.from("analyses").insert([{
+      user_id: userId,
       filename: req.file.originalname,
-      analysis
-    });
+      bpm: analysis.bpm,
+      key: analysis.key,
+      energy: analysis.energy,
+      analysis_data: analysis,
+      file_url: fileUrl
+    }]);
+
+    if (error) throw error;
+
+    await supabase.from("activities").insert([{
+      user_id: userId,
+      action: "analyze",
+      metadata: { filename: req.file.originalname }
+    }]);
+
+    res.json({ success: true, analysis });
 
   } catch (err) {
-    console.error("SERVER ERROR:", err);
+    console.error(err);
     res.status(500).json({ error: "Analysis failed" });
   }
 });
 
 /* =========================
-   GET USER ANALYSES
+   GET ANALYSES
 ========================= */
 app.get("/api/my-analyses/:userId", async (req, res) => {
-  try {
-    const { userId } = req.params;
+  const { data, error } = await supabase
+    .from("analyses")
+    .select("*")
+    .eq("user_id", req.params.userId)
+    .order("created_at", { ascending: false });
 
-    console.log("Fetching analyses for:", userId);
+  if (error) return res.status(500).json({ error: error.message });
 
-    const { data, error } = await supabase
-      .from("analyses")
-      .select("*")
-      .eq("user_id", userId)
-      .order("created_at", { ascending: false });
-
-    if (error) {
-      console.error("FETCH ERROR:", error);
-      return res.status(500).json({ error: error.message });
-    }
-
-    res.json({ success: true, data });
-
-  } catch (err) {
-    console.error("SERVER ERROR:", err);
-    res.status(500).json({ error: err.message });
-  }
+  res.json({ success: true, data });
 });
 
 /* =========================
    GET ACTIVITY
 ========================= */
 app.get("/api/activity/:userId", async (req, res) => {
-  try {
-    const { userId } = req.params;
+  const { data, error } = await supabase
+    .from("activities")
+    .select("*")
+    .eq("user_id", req.params.userId)
+    .limit(10);
 
-    console.log("Fetching activity for:", userId);
+  if (error) return res.status(500).json({ error: error.message });
 
-    const { data, error } = await supabase
-      .from("activities")
-      .select("*")
-      .eq("user_id", userId)
-      .order("created_at", { ascending: false })
-      .limit(10);
+  res.json({ success: true, data });
+});
 
-    if (error) {
-      console.error("ACTIVITY FETCH ERROR:", error);
-      return res.status(500).json({ error: error.message });
-    }
+/* =========================
+   AI DJ CLOUD ENGINE
+========================= */
 
-    res.json({ success: true, data });
+/* 1️⃣ LOG MIX */
+app.post("/api/log-mix", async (req, res) => {
+  const { userId, fromTrack, toTrack } = req.body;
 
-  } catch (err) {
-    console.error("SERVER ERROR:", err);
-    res.status(500).json({ error: err.message });
+  const bpmDiff = Math.abs(fromTrack.bpm - toTrack.bpm);
+  const energyDiff = toTrack.energy - fromTrack.energy;
+  const keyMatch = fromTrack.key === toTrack.key;
+
+  const { error } = await supabase.from("mix_history").insert([{
+    user_id: userId,
+    from_track: fromTrack.id,
+    to_track: toTrack.id,
+    bpm_diff: bpmDiff,
+    energy_diff: energyDiff,
+    key_match: keyMatch,
+    timing: "on_phrase"
+  }]);
+
+  if (error) return res.status(500).json({ error: error.message });
+
+  res.json({ success: true });
+});
+
+/* 2️⃣ USER PREFERENCES */
+const getUserPreferences = async (userId) => {
+  const { data } = await supabase
+    .from("mix_history")
+    .select("*")
+    .eq("user_id", userId);
+
+  if (!data || data.length < 5) {
+    return { bpmTolerance: 10, energyBias: 0, keyStrictness: 0.7 };
   }
+
+  let totalBpm = 0, totalEnergy = 0, keyMatches = 0;
+
+  data.forEach(d => {
+    totalBpm += d.bpm_diff;
+    totalEnergy += d.energy_diff;
+    if (d.key_match) keyMatches++;
+  });
+
+  return {
+    bpmTolerance: totalBpm / data.length + 2,
+    energyBias: totalEnergy / data.length,
+    keyStrictness: keyMatches / data.length
+  };
+};
+
+/* 3️⃣ AI SUGGEST */
+app.post("/api/ai-suggest", async (req, res) => {
+  const { userId, currentTrack, library } = req.body;
+
+  const prefs = await getUserPreferences(userId);
+
+  let best = null;
+  let bestScore = -1;
+
+  library.forEach(track => {
+    if (track.id === currentTrack.id) return;
+
+    const bpmDiff = Math.abs(currentTrack.bpm - track.bpm);
+    const energyDiff = track.energy - currentTrack.energy;
+    const keyMatch = currentTrack.key === track.key;
+
+    let score = 0;
+
+    score += bpmDiff < prefs.bpmTolerance ? 1 : 0.5;
+    score += (prefs.energyBias > 0 ? (energyDiff >= 0 ? 1 : 0.5) : 0.8);
+    score += keyMatch ? prefs.keyStrictness : 0.3;
+
+    if (score > bestScore) {
+      bestScore = score;
+      best = track;
+    }
+  });
+
+  res.json({ success: true, suggestion: best, confidence: bestScore });
+});
+
+/* 4️⃣ UPDATE PREFERENCES */
+app.post("/api/update-preferences", async (req, res) => {
+  const { userId } = req.body;
+  const prefs = await getUserPreferences(userId);
+
+  const { data: existing } = await supabase
+    .from("ai_preferences")
+    .select("*")
+    .eq("user_id", userId)
+    .single();
+
+  if (existing) {
+    await supabase.from("ai_preferences").update({
+      bpm_tolerance: prefs.bpmTolerance,
+      energy_bias: prefs.energyBias,
+      key_strictness: prefs.keyStrictness
+    }).eq("user_id", userId);
+  } else {
+    await supabase.from("ai_preferences").insert([{
+      user_id: userId,
+      bpm_tolerance: prefs.bpmTolerance,
+      energy_bias: prefs.energyBias,
+      key_strictness: prefs.keyStrictness
+    }]);
+  }
+
+  res.json({ success: true, preferences: prefs });
+});
+
+/* 5️⃣ USER STATS */
+app.get("/api/user-stats/:userId", async (req, res) => {
+  const { data } = await supabase
+    .from("mix_history")
+    .select("*")
+    .eq("user_id", req.params.userId);
+
+  if (!data || !data.length) {
+    return res.json({ totalMixes: 0 });
+  }
+
+  let totalBpm = 0, totalEnergy = 0, keyMatches = 0;
+
+  data.forEach(m => {
+    totalBpm += m.bpm_diff;
+    totalEnergy += m.energy_diff;
+    if (m.key_match) keyMatches++;
+  });
+
+  res.json({
+    totalMixes: data.length,
+    avgBpmDiff: totalBpm / data.length,
+    avgEnergyDiff: totalEnergy / data.length,
+    keyMatchRate: keyMatches / data.length
+  });
 });
 
 /* =========================
