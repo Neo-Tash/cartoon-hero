@@ -3,136 +3,172 @@ import cors from "cors";
 import multer from "multer";
 import fs from "fs";
 import path from "path";
-import { createClient } from "@supabase/supabase-js";
+import PocketBase from "pocketbase";
 
 const app = express();
+const PORT = process.env.PORT || 3000;
 
-/* =========================
-   ENSURE UPLOAD FOLDER EXISTS
-========================= */
-const uploadDir = path.join(process.cwd(), "uploads");
+// =============================
+// CONFIG
+// =============================
+app.use(cors());
+app.use(express.json());
 
+// PocketBase
+const pb = new PocketBase("http://127.0.0.1:8090");
+
+// =============================
+// UPLOAD SETUP
+// =============================
+const uploadDir = "uploads";
+
+// Ensure uploads folder exists
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir);
 }
 
-/* =========================
-   MULTER STORAGE (FIXED)
-========================= */
+// Multer config
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
+  destination: function (req, file, cb) {
     cb(null, uploadDir);
   },
-  filename: (req, file, cb) => {
-    const safeName = file.originalname.replace(/\s+/g, "_");
-    const uniqueName = Date.now() + "-" + safeName;
+  filename: function (req, file, cb) {
+    const uniqueName = Date.now() + "-" + file.originalname.replace(/\s+/g, "_");
     cb(null, uniqueName);
-  }
+  },
 });
 
 const upload = multer({ storage });
 
-/* =========================
-   SUPABASE CONNECTION
-========================= */
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_ANON_KEY
-);
+// =============================
+// STATIC FILE SERVING
+// =============================
+app.use("/uploads", express.static(path.resolve(uploadDir)));
 
-/* =========================
-   MIDDLEWARE
-========================= */
-app.use(cors({
-  origin: "*",
-  methods: ["GET", "POST"],
-  allowedHeaders: ["Content-Type", "Authorization"]
-}));
-
-app.use(express.json());
-app.use("/uploads", express.static(uploadDir));
-
-/* =========================
-   HEALTH CHECK
-========================= */
+// =============================
+// HEALTH CHECK
+// =============================
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok" });
 });
 
-/* =========================
-   LOGIN (TEMP)
-========================= */
-app.post("/api/login", (req, res) => {
-  const { email, password } = req.body;
-
-  if (email === "admin@slickcoherence.com" && password === "password123") {
-    return res.json({
-      token: "demo-token-123",
-      user: { email, username: "Admin" }
-    });
-  }
-
-  return res.status(401).json({ error: "Invalid credentials" });
-});
-
-/* =========================
-   ANALYZE + SAVE (FIXED)
-========================= */
+// =============================
+// ANALYZE TRACK (FIXED)
+// =============================
 app.post("/api/analyze", upload.single("file"), async (req, res) => {
   try {
+    const { userId } = req.body;
+
     if (!req.file) {
       return res.status(400).json({ error: "No file uploaded" });
     }
 
-    const userId = req.headers.authorization;
-    if (!userId) {
-      return res.status(401).json({ error: "Missing user identity" });
-    }
+    // 🔥 IMPORTANT: Generate file URL
+    const fileUrl = `${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`;
 
-    // 🔥 FORCE PRODUCTION URL (DO NOT USE req.get("host") HERE)
-    const BASE_URL = "https://cartoon-hero-production.up.railway.app";
+    // Dummy analysis (replace later with real engine)
+    const bpm = 120;
+    const key = "A Minor";
+    const energy = 0.82;
 
-    const fileUrl = `${BASE_URL}/uploads/${req.file.filename}`;
-
-    const analysis = {
-      bpm: 120,
-      key: "A Minor",
-      energy: 0.82,
-      loudness: -6.5
-    };
-
-    const { error } = await supabase.from("analyses").insert([{
-      user_id: userId,
+    const record = await pb.collection("analyses").create({
+      user_id: userId || "guest",
       filename: req.file.originalname,
-      bpm: analysis.bpm,
-      key: analysis.key,
-      energy: analysis.energy,
-      analysis_data: analysis,
-      file_url: fileUrl // ✅ GUARANTEED VALUE NOW
-    }]);
-
-    if (error) throw error;
-
-    await supabase.from("activities").insert([{
-      user_id: userId,
-      action: "analyze",
-      metadata: { filename: req.file.originalname }
-    }]);
+      file_url: fileUrl, // ✅ FIXED HERE
+      bpm,
+      key,
+      energy,
+    });
 
     res.json({
       success: true,
-      analysis,
-      file_url: fileUrl
+      data: record,
     });
-
   } catch (err) {
-    console.error("ANALYZE ERROR:", err);
+    console.error("Analyze error:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-/* =========================
-   GET ANALYSES
-========================= */
+// =============================
+// GET USER ANALYSES
+// =============================
 app.get("/api/my-analyses/:userId", async (req, res) => {
-  const { data, error
+  try {
+    const { userId } = req.params;
+
+    const records = await pb.collection("analyses").getFullList({
+      filter: `user_id="${userId}"`,
+      sort: "-created",
+    });
+
+    res.json({
+      success: true,
+      data: records,
+    });
+  } catch (err) {
+    console.error("Fetch analyses error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =============================
+// LOG MIX
+// =============================
+app.post("/api/log-mix", async (req, res) => {
+  try {
+    const { userId, fromTrack, toTrack } = req.body;
+
+    if (!userId || !fromTrack || !toTrack) {
+      return res.status(400).json({
+        error: "Missing required fields: userId, fromTrack, toTrack",
+      });
+    }
+
+    const bpmDiff = Math.abs((fromTrack.bpm || 120) - (toTrack.bpm || 120));
+    const energyDiff = (toTrack.energy || 0.5) - (fromTrack.energy || 0.5);
+    const keyMatch = (fromTrack.key || "C") === (toTrack.key || "C");
+
+    await pb.collection("mix_history").create({
+      user_id: userId,
+      from_track: fromTrack.id || fromTrack,
+      to_track: toTrack.id || toTrack,
+      bpm_diff: bpmDiff,
+      energy_diff: energyDiff,
+      key_match: keyMatch,
+      timing: "on_phrase",
+    });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Log mix error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =============================
+// USER STATS
+// =============================
+app.get("/api/user-stats/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const mixes = await pb.collection("mix_history").getFullList({
+      filter: `user_id="${userId}"`,
+    });
+
+    res.json({
+      totalMixes: mixes.length,
+    });
+  } catch (err) {
+    console.error("User stats error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =============================
+// START SERVER
+// =============================
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
