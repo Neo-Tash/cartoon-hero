@@ -5,7 +5,7 @@ import { createClient } from "@supabase/supabase-js";
 
 const app = express();
 
-// 🔥 IMPORTANT: use memory storage instead of disk
+// Use memory storage so Railway does not rely on temporary disk storage.
 const upload = multer({ storage: multer.memoryStorage() });
 
 /* =========================
@@ -13,8 +13,242 @@ const upload = multer({ storage: multer.memoryStorage() });
 ========================= */
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY // 🔥 use service role for uploads
+  process.env.SUPABASE_SERVICE_ROLE_KEY
 );
+
+/* =========================
+   LIGHTWEIGHT AUDIO ANALYSIS HELPERS
+   Zero-dependency foundation:
+   - True PCM waveform extraction for WAV files
+   - Safe byte-based fallback for MP3/M4A/other compressed files
+   For pro-grade MP3 decoding later, add FFmpeg, Essentia, or a Python microservice.
+========================= */
+const clamp = (value, min = 0, max = 1) => Math.max(min, Math.min(max, value));
+
+const sanitizeFileName = (name = "track") => {
+  return String(name)
+    .replace(/[^a-zA-Z0-9._-]/g, "_")
+    .replace(/_+/g, "_")
+    .slice(0, 140);
+};
+
+const normalizePeaks = (peaks = []) => {
+  const max = Math.max(...peaks, 0.0001);
+  return peaks.map((value) => Number(clamp(value / max).toFixed(4)));
+};
+
+const readPcmSample = (buffer, offset, bitsPerSample, audioFormat) => {
+  if (offset < 0 || offset >= buffer.length) return 0;
+
+  if (audioFormat === 3 && bitsPerSample === 32 && offset + 4 <= buffer.length) {
+    return clamp(Math.abs(buffer.readFloatLE(offset)), 0, 1);
+  }
+
+  if (bitsPerSample === 8 && offset + 1 <= buffer.length) {
+    return Math.abs((buffer.readUInt8(offset) - 128) / 128);
+  }
+
+  if (bitsPerSample === 16 && offset + 2 <= buffer.length) {
+    return Math.abs(buffer.readInt16LE(offset) / 32768);
+  }
+
+  if (bitsPerSample === 24 && offset + 3 <= buffer.length) {
+    let value = buffer.readIntLE(offset, 3);
+    return Math.abs(value / 8388608);
+  }
+
+  if (bitsPerSample === 32 && offset + 4 <= buffer.length) {
+    return Math.abs(buffer.readInt32LE(offset) / 2147483648);
+  }
+
+  return 0;
+};
+
+const extractWavPeaks = (buffer, targetPeakCount = 1600) => {
+  try {
+    if (buffer.length < 44) return null;
+    if (buffer.toString("ascii", 0, 4) !== "RIFF" || buffer.toString("ascii", 8, 12) !== "WAVE") {
+      return null;
+    }
+
+    let offset = 12;
+    let fmt = null;
+    let dataStart = null;
+    let dataSize = null;
+
+    while (offset + 8 <= buffer.length) {
+      const chunkId = buffer.toString("ascii", offset, offset + 4);
+      const chunkSize = buffer.readUInt32LE(offset + 4);
+      const chunkDataStart = offset + 8;
+
+      if (chunkId === "fmt ") {
+        fmt = {
+          audioFormat: buffer.readUInt16LE(chunkDataStart),
+          channels: buffer.readUInt16LE(chunkDataStart + 2),
+          sampleRate: buffer.readUInt32LE(chunkDataStart + 4),
+          byteRate: buffer.readUInt32LE(chunkDataStart + 8),
+          blockAlign: buffer.readUInt16LE(chunkDataStart + 12),
+          bitsPerSample: buffer.readUInt16LE(chunkDataStart + 14)
+        };
+      }
+
+      if (chunkId === "data") {
+        dataStart = chunkDataStart;
+        dataSize = chunkSize;
+        break;
+      }
+
+      offset = chunkDataStart + chunkSize + (chunkSize % 2);
+    }
+
+    if (!fmt || dataStart === null || !dataSize || !fmt.sampleRate || !fmt.channels || !fmt.blockAlign) {
+      return null;
+    }
+
+    const totalFrames = Math.floor(dataSize / fmt.blockAlign);
+    const duration = totalFrames / fmt.sampleRate;
+    const peakCount = Math.max(400, Math.min(targetPeakCount, Math.floor(totalFrames / 200) || targetPeakCount));
+    const framesPerPeak = Math.max(1, Math.floor(totalFrames / peakCount));
+    const bytesPerSample = fmt.bitsPerSample / 8;
+    const peaks = [];
+
+    for (let i = 0; i < peakCount; i++) {
+      const frameStart = i * framesPerPeak;
+      const frameEnd = Math.min(totalFrames, frameStart + framesPerPeak);
+      let peak = 0;
+
+      for (let frame = frameStart; frame < frameEnd; frame += Math.max(1, Math.floor(framesPerPeak / 48))) {
+        let channelPeak = 0;
+        for (let ch = 0; ch < fmt.channels; ch++) {
+          const sampleOffset = dataStart + frame * fmt.blockAlign + ch * bytesPerSample;
+          channelPeak += readPcmSample(buffer, sampleOffset, fmt.bitsPerSample, fmt.audioFormat);
+        }
+        peak = Math.max(peak, channelPeak / fmt.channels);
+      }
+
+      peaks.push(peak);
+    }
+
+    return {
+      waveform_peaks: normalizePeaks(peaks),
+      duration: Number(duration.toFixed(2)),
+      sample_rate: fmt.sampleRate,
+      channels: fmt.channels,
+      analysis_method: "wav_pcm"
+    };
+  } catch (err) {
+    console.error("WAV peak extraction failed:", err);
+    return null;
+  }
+};
+
+const extractBufferPeaks = (buffer, targetPeakCount = 1600) => {
+  const safeBuffer = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer || []);
+  const length = safeBuffer.length;
+  const peakCount = Math.max(400, Math.min(targetPeakCount, Math.floor(length / 900) || targetPeakCount));
+  const bytesPerPeak = Math.max(1, Math.floor(length / peakCount));
+  const peaks = [];
+
+  for (let i = 0; i < peakCount; i++) {
+    const start = i * bytesPerPeak;
+    const end = Math.min(length, start + bytesPerPeak);
+    let peak = 0;
+    let sum = 0;
+    let count = 0;
+
+    for (let j = start; j < end; j += 12) {
+      const value = Math.abs((safeBuffer[j] - 128) / 128);
+      peak = Math.max(peak, value);
+      sum += value;
+      count++;
+    }
+
+    const avg = count ? sum / count : 0;
+    peaks.push((peak * 0.72) + (avg * 0.28));
+  }
+
+  return {
+    waveform_peaks: normalizePeaks(peaks),
+    duration: null,
+    sample_rate: null,
+    channels: null,
+    analysis_method: "compressed_file_byte_peaks"
+  };
+};
+
+const buildEnergyCurve = (waveformPeaks = [], points = 64) => {
+  if (!waveformPeaks.length) return [];
+  const bucketSize = Math.max(1, Math.floor(waveformPeaks.length / points));
+  const curve = [];
+
+  for (let i = 0; i < points; i++) {
+    const start = i * bucketSize;
+    const end = Math.min(waveformPeaks.length, start + bucketSize);
+    const bucket = waveformPeaks.slice(start, end);
+    const avg = bucket.length ? bucket.reduce((sum, value) => sum + value, 0) / bucket.length : 0;
+    curve.push(Number(avg.toFixed(4)));
+  }
+
+  return curve;
+};
+
+const detectPeakTimes = (waveformPeaks = [], duration = null, maxPeaks = 5) => {
+  if (!waveformPeaks.length || !duration) return [];
+
+  const candidates = waveformPeaks
+    .map((value, index) => ({ value, index }))
+    .filter((item) => item.index > waveformPeaks.length * 0.12 && item.index < waveformPeaks.length * 0.92)
+    .sort((a, b) => b.value - a.value);
+
+  const selected = [];
+  const minSpacingSeconds = 8;
+
+  for (const item of candidates) {
+    const time = (item.index / waveformPeaks.length) * duration;
+    const tooClose = selected.some((existing) => Math.abs(existing - time) < minSpacingSeconds);
+    if (!tooClose) selected.push(Number(time.toFixed(2)));
+    if (selected.length >= maxPeaks) break;
+  }
+
+  return selected.sort((a, b) => a - b);
+};
+
+const analyzeAudioBuffer = (file) => {
+  const wavResult = extractWavPeaks(file.buffer);
+  const peakResult = wavResult || extractBufferPeaks(file.buffer);
+  const waveformPeaks = peakResult.waveform_peaks || [];
+  const energyCurve = buildEnergyCurve(waveformPeaks);
+  const energy = energyCurve.length
+    ? energyCurve.reduce((sum, value) => sum + value, 0) / energyCurve.length
+    : 0.5;
+
+  const detectedPeakTimes = detectPeakTimes(waveformPeaks, peakResult.duration, 5);
+  const dropTime = detectedPeakTimes.length
+    ? detectedPeakTimes[Math.min(2, detectedPeakTimes.length - 1)]
+    : null;
+
+  return {
+    bpm: 120,
+    key: "A Minor",
+    energy: Number(clamp(energy).toFixed(2)),
+    loudness: -6.5,
+    duration: peakResult.duration,
+    waveform_peaks: waveformPeaks,
+    energy_curve: energyCurve,
+    peaks: detectedPeakTimes,
+    drop_time: dropTime,
+    beat_grid: [],
+    first_beat_offset: 0,
+    confidence: {
+      bpm: 0.2,
+      key: 0.2,
+      waveform: peakResult.analysis_method === "wav_pcm" ? 0.8 : 0.45
+    },
+    analysis_method: peakResult.analysis_method,
+    sample_rate: peakResult.sample_rate,
+    channels: peakResult.channels
+  };
+};
 
 /* =========================
    MIDDLEWARE
@@ -25,7 +259,7 @@ app.use(cors({
   allowedHeaders: ["Content-Type", "Authorization"]
 }));
 
-app.use(express.json());
+app.use(express.json({ limit: "10mb" }));
 
 /* =========================
    HEALTH CHECK
@@ -51,7 +285,7 @@ app.post("/api/login", (req, res) => {
 });
 
 /* =========================
-   ANALYZE + SAVE (FIXED)
+   ANALYZE + SAVE
 ========================= */
 app.post("/api/analyze", upload.single("file"), async (req, res) => {
   try {
@@ -61,22 +295,23 @@ app.post("/api/analyze", upload.single("file"), async (req, res) => {
     if (!userId) return res.status(401).json({ error: "Missing user identity" });
 
     const file = req.file;
+    const safeOriginalName = sanitizeFileName(file.originalname || "track");
+    const fileName = `${Date.now()}-${safeOriginalName}`;
 
-    const fileName = `${Date.now()}-${file.originalname}`;
-
-    // 🔥 Upload to Supabase Storage
+    // Upload to Supabase Storage.
     const { error: uploadError } = await supabase.storage
-      .from("tracks") // ⚠️ bucket must exist in Supabase
+      .from("tracks")
       .upload(fileName, file.buffer, {
         contentType: file.mimetype,
+        upsert: false
       });
 
     if (uploadError) {
-      console.error(uploadError);
+      console.error("Supabase upload error:", uploadError);
       return res.status(500).json({ error: "Upload failed" });
     }
 
-    // 🔥 Get PUBLIC URL
+    // Get public playback URL.
     const { data: publicUrlData } = supabase
       .storage
       .from("tracks")
@@ -84,42 +319,41 @@ app.post("/api/analyze", upload.single("file"), async (req, res) => {
 
     const fileUrl = publicUrlData.publicUrl;
 
-    // 🔥 Analysis placeholder
-    const analysis = {
-      bpm: 120,
-      key: "A Minor",
-      energy: 0.82,
-      loudness: -6.5
-    };
+    // Lightweight analysis foundation.
+    const analysis = analyzeAudioBuffer(file);
 
-    // 🔥 Save to DB
-    const { error } = await supabase.from("analyses").insert([{
+    // Save to DB.
+    const { data: insertedRows, error } = await supabase.from("analyses").insert([{
       user_id: userId,
       filename: file.originalname,
       bpm: analysis.bpm,
       key: analysis.key,
       energy: analysis.energy,
       analysis_data: analysis,
-      file_url: fileUrl // ✅ FIXED
-    }]);
+      file_url: fileUrl
+    }]).select("*");
 
     if (error) throw error;
 
     await supabase.from("activities").insert([{
       user_id: userId,
       action: "analyze",
-      metadata: { filename: file.originalname }
+      metadata: {
+        filename: file.originalname,
+        analysis_method: analysis.analysis_method,
+        waveform_peaks_count: analysis.waveform_peaks.length
+      }
     }]);
 
-    // 🔥 IMPORTANT: return file_url to frontend
     res.json({
       success: true,
       analysis,
-      file_url: fileUrl
+      file_url: fileUrl,
+      data: insertedRows?.[0] || null
     });
 
   } catch (err) {
-    console.error(err);
+    console.error("Analyze error:", err);
     res.status(500).json({ error: "Analysis failed" });
   }
 });
