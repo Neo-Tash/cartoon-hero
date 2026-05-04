@@ -17,13 +17,22 @@ const supabase = createClient(
 );
 
 /* =========================
-   LIGHTWEIGHT AUDIO ANALYSIS HELPERS
-   Zero-dependency foundation:
-   - True PCM waveform extraction for WAV files
-   - Safe byte-based fallback for MP3/M4A/other compressed files
-   For pro-grade MP3 decoding later, add FFmpeg, Essentia, or a Python microservice.
+   AUDIO ENGINE CONNECTION
+   Set this in Railway on your MAIN API service:
+   AUDIO_ENGINE_URL=https://your-audio-engine.up.railway.app
+========================= */
+const AUDIO_ENGINE_URL = (process.env.AUDIO_ENGINE_URL || "").replace(/\/$/, "");
+
+/* =========================
+   LIGHTWEIGHT FALLBACK AUDIO ANALYSIS HELPERS
+   Used only if AUDIO_ENGINE_URL is missing or the Python engine fails.
 ========================= */
 const clamp = (value, min = 0, max = 1) => Math.max(min, Math.min(max, value));
+
+const safeNumber = (value, fallback = 0) => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+};
 
 const sanitizeFileName = (name = "track") => {
   return String(name)
@@ -33,8 +42,9 @@ const sanitizeFileName = (name = "track") => {
 };
 
 const normalizePeaks = (peaks = []) => {
-  const max = Math.max(...peaks, 0.0001);
-  return peaks.map((value) => Number(clamp(value / max).toFixed(4)));
+  const safePeaks = Array.isArray(peaks) ? peaks.map((v) => Math.abs(Number(v) || 0)) : [];
+  const max = Math.max(...safePeaks, 0.0001);
+  return safePeaks.map((value) => Number(clamp(value / max).toFixed(4)));
 };
 
 const readPcmSample = (buffer, offset, bitsPerSample, audioFormat) => {
@@ -53,7 +63,7 @@ const readPcmSample = (buffer, offset, bitsPerSample, audioFormat) => {
   }
 
   if (bitsPerSample === 24 && offset + 3 <= buffer.length) {
-    let value = buffer.readIntLE(offset, 3);
+    const value = buffer.readIntLE(offset, 3);
     return Math.abs(value / 8388608);
   }
 
@@ -134,7 +144,7 @@ const extractWavPeaks = (buffer, targetPeakCount = 1600) => {
       duration: Number(duration.toFixed(2)),
       sample_rate: fmt.sampleRate,
       channels: fmt.channels,
-      analysis_method: "wav_pcm"
+      analysis_method: "wav_pcm_fallback"
     };
   } catch (err) {
     console.error("WAV peak extraction failed:", err);
@@ -172,7 +182,7 @@ const extractBufferPeaks = (buffer, targetPeakCount = 1600) => {
     duration: null,
     sample_rate: null,
     channels: null,
-    analysis_method: "compressed_file_byte_peaks"
+    analysis_method: "compressed_file_byte_peaks_fallback"
   };
 };
 
@@ -213,7 +223,7 @@ const detectPeakTimes = (waveformPeaks = [], duration = null, maxPeaks = 5) => {
   return selected.sort((a, b) => a - b);
 };
 
-const analyzeAudioBuffer = (file) => {
+const fallbackAnalyzeAudioBuffer = (file) => {
   const wavResult = extractWavPeaks(file.buffer);
   const peakResult = wavResult || extractBufferPeaks(file.buffer);
   const waveformPeaks = peakResult.waveform_peaks || [];
@@ -242,12 +252,99 @@ const analyzeAudioBuffer = (file) => {
     confidence: {
       bpm: 0.2,
       key: 0.2,
-      waveform: peakResult.analysis_method === "wav_pcm" ? 0.8 : 0.45
+      waveform: peakResult.analysis_method.includes("wav") ? 0.8 : 0.45
     },
     analysis_method: peakResult.analysis_method,
+    analysis_engine_status: "fallback_zero_dependency",
     sample_rate: peakResult.sample_rate,
     channels: peakResult.channels
   };
+};
+
+const normalizeEngineAnalysis = (rawAnalysis = {}) => {
+  const waveformPeaks = Array.isArray(rawAnalysis.waveform_peaks)
+    ? rawAnalysis.waveform_peaks.map((v) => Number(clamp(Number(v) || 0).toFixed(4)))
+    : [];
+
+  const energyCurve = Array.isArray(rawAnalysis.energy_curve)
+    ? rawAnalysis.energy_curve.map((v) => Number(clamp(Number(v) || 0).toFixed(4)))
+    : buildEnergyCurve(waveformPeaks, 96);
+
+  const beatGrid = Array.isArray(rawAnalysis.beat_grid)
+    ? rawAnalysis.beat_grid.map((v) => Number(safeNumber(v, 0).toFixed(3))).filter((v) => v >= 0)
+    : [];
+
+  const peaks = Array.isArray(rawAnalysis.peaks)
+    ? rawAnalysis.peaks.map((v) => Number(safeNumber(v, 0).toFixed(2))).filter((v) => v >= 0)
+    : [];
+
+  const confidence = rawAnalysis.confidence && typeof rawAnalysis.confidence === "object"
+    ? rawAnalysis.confidence
+    : {};
+
+  return {
+    bpm: safeNumber(rawAnalysis.bpm, 120),
+    key: rawAnalysis.key || "Unknown",
+    energy: Number(clamp(safeNumber(rawAnalysis.energy, 0.5)).toFixed(4)),
+    loudness: safeNumber(rawAnalysis.loudness, -6.5),
+    duration: rawAnalysis.duration === null || rawAnalysis.duration === undefined ? null : safeNumber(rawAnalysis.duration, null),
+    waveform_peaks: waveformPeaks,
+    energy_curve: energyCurve,
+    peaks,
+    drop_time: rawAnalysis.drop_time === null || rawAnalysis.drop_time === undefined ? null : safeNumber(rawAnalysis.drop_time, null),
+    beat_grid: beatGrid,
+    first_beat_offset: safeNumber(rawAnalysis.first_beat_offset, beatGrid[0] || 0),
+    confidence: {
+      bpm: Number(clamp(safeNumber(confidence.bpm, rawAnalysis.bpm_confidence || 0.5)).toFixed(2)),
+      key: Number(clamp(safeNumber(confidence.key, rawAnalysis.key_confidence || 0.35)).toFixed(2)),
+      waveform: Number(clamp(safeNumber(confidence.waveform, waveformPeaks.length ? 0.85 : 0)).toFixed(2))
+    },
+    analysis_method: rawAnalysis.analysis_method || "python_audio_engine",
+    analysis_engine_status: "python_connected",
+    sample_rate: rawAnalysis.sample_rate ?? null,
+    channels: rawAnalysis.channels ?? null
+  };
+};
+
+const analyzeWithPythonAudioEngine = async (file) => {
+  if (!AUDIO_ENGINE_URL) {
+    console.warn("AUDIO_ENGINE_URL is not set. Using fallback analysis.");
+    return null;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 180000);
+
+  try {
+    const form = new FormData();
+    const blob = new Blob([file.buffer], { type: file.mimetype || "application/octet-stream" });
+    form.append("file", blob, file.originalname || "track.mp3");
+
+    const response = await fetch(`${AUDIO_ENGINE_URL}/analyze`, {
+      method: "POST",
+      body: form,
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => "");
+      throw new Error(`Audio engine error ${response.status}: ${errorText}`);
+    }
+
+    const result = await response.json();
+    const rawAnalysis = result?.analysis || result;
+
+    if (!rawAnalysis || typeof rawAnalysis !== "object") {
+      throw new Error("Audio engine returned no analysis object");
+    }
+
+    return normalizeEngineAnalysis(rawAnalysis);
+  } catch (err) {
+    console.error("Python audio engine failed. Falling back to local analysis:", err.message || err);
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
 };
 
 /* =========================
@@ -265,7 +362,11 @@ app.use(express.json({ limit: "10mb" }));
    HEALTH CHECK
 ========================= */
 app.get("/api/health", (req, res) => {
-  res.json({ status: "ok" });
+  res.json({
+    status: "ok",
+    audio_engine_configured: Boolean(AUDIO_ENGINE_URL),
+    audio_engine_url: AUDIO_ENGINE_URL || null
+  });
 });
 
 /* =========================
@@ -298,7 +399,7 @@ app.post("/api/analyze", upload.single("file"), async (req, res) => {
     const safeOriginalName = sanitizeFileName(file.originalname || "track");
     const fileName = `${Date.now()}-${safeOriginalName}`;
 
-    // Upload to Supabase Storage.
+    // Upload to Supabase Storage first so playback stays stable.
     const { error: uploadError } = await supabase.storage
       .from("tracks")
       .upload(fileName, file.buffer, {
@@ -319,8 +420,9 @@ app.post("/api/analyze", upload.single("file"), async (req, res) => {
 
     const fileUrl = publicUrlData.publicUrl;
 
-    // Lightweight analysis foundation.
-    const analysis = analyzeAudioBuffer(file);
+    // Real analysis from Python service. If it fails, use fallback so uploads do not break.
+    const pythonAnalysis = await analyzeWithPythonAudioEngine(file);
+    const analysis = pythonAnalysis || fallbackAnalyzeAudioBuffer(file);
 
     // Save to DB.
     const { data: insertedRows, error } = await supabase.from("analyses").insert([{
@@ -341,7 +443,11 @@ app.post("/api/analyze", upload.single("file"), async (req, res) => {
       metadata: {
         filename: file.originalname,
         analysis_method: analysis.analysis_method,
-        waveform_peaks_count: analysis.waveform_peaks.length
+        analysis_engine_status: analysis.analysis_engine_status,
+        waveform_peaks_count: analysis.waveform_peaks?.length || 0,
+        beat_grid_count: analysis.beat_grid?.length || 0,
+        bpm: analysis.bpm,
+        key: analysis.key
       }
     }]);
 
@@ -395,4 +501,5 @@ const PORT = process.env.PORT || 8080;
 
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`🎧 Audio Engine: ${AUDIO_ENGINE_URL || "not configured - fallback mode"}`);
 });
