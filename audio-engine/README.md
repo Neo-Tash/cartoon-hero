@@ -1,3 +1,14 @@
-# SlickCoherence Audio Engine v1.2 Railway Safe
+# SlickCoherence Audio Engine v1.3
 
-This version decodes only a 90-second preview with FFmpeg at 22050 Hz mono before running librosa. This prevents Railway 502 crashes on MP3 analysis while still returning real BPM, key estimate, waveform peaks, energy curve, beat grid foundation, duration, sample rate, and loudness.
+Railway-safe FastAPI audio analysis engine.
+
+Fix in v1.3:
+- Removes dependency on system `ffmpeg` binary being installed.
+- Uses `imageio-ffmpeg` bundled FFmpeg binary for decode.
+- Uses `mutagen` for duration metadata where possible.
+
+Health check:
+`GET /health`
+
+Analyze:
+`POST /analyze` with multipart field `file`.

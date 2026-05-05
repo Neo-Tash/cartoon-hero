@@ -1,5 +1,5 @@
 [phases.setup]
-nixPkgs = ["python311", "ffmpeg", "libsndfile", "gcc"]
+nixPkgs = ["python311", "libsndfile", "gcc"]
 
 [phases.install]
 cmds = [

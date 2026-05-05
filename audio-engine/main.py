@@ -4,12 +4,14 @@ import tempfile
 import subprocess
 from typing import Dict, List, Tuple, Optional
 
+import imageio_ffmpeg
+from mutagen import File as MutagenFile
 import numpy as np
 import librosa
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="SlickCoherence Audio Engine", version="1.2.0")
+app = FastAPI(title="SlickCoherence Audio Engine", version="1.3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -40,17 +42,12 @@ def run_cmd(cmd: List[str], timeout: int = 25) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, check=False)
 
 
-def get_duration_ffprobe(path: str) -> Optional[float]:
+def get_duration_metadata(path: str) -> Optional[float]:
+    """Read duration without needing system ffprobe. Mutagen handles common MP3/M4A/WAV metadata."""
     try:
-        result = run_cmd([
-            "ffprobe", "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
-            path,
-        ], timeout=12)
-        if result.returncode != 0:
-            return None
-        duration = safe_float(result.stdout.decode("utf-8", errors="ignore").strip(), None)
+        audio = MutagenFile(path)
+        duration = getattr(getattr(audio, "info", None), "length", None)
+        duration = safe_float(duration, None)
         return round(duration, 2) if duration and duration > 0 else None
     except Exception:
         return None
@@ -63,7 +60,7 @@ def convert_preview_to_wav(src_path: str) -> str:
     wav.close()
 
     cmd = [
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error",
         "-i", src_path,
         "-t", str(ANALYSIS_SECONDS),
         "-ac", "1",
@@ -205,8 +202,8 @@ def health():
     return {
         "status": "ok",
         "service": "slickcoherence-audio-engine-v1",
-        "version": "1.2.0",
-        "mode": "railway_safe_preview_analysis",
+        "version": "1.3.0",
+        "mode": "railway_safe_preview_analysis_imageio_ffmpeg",
     }
 
 
@@ -230,7 +227,7 @@ async def analyze_audio(file: UploadFile = File(...)) -> Dict:
             source_path = tmp.name
             tmp.write(raw)
 
-        duration = get_duration_ffprobe(source_path)
+        duration = get_duration_metadata(source_path)
         wav_path = convert_preview_to_wav(source_path)
         y, sr = librosa.load(wav_path, sr=TARGET_SR, mono=True)
 
@@ -277,7 +274,7 @@ async def analyze_audio(file: UploadFile = File(...)) -> Dict:
                     "key": key_confidence,
                     "waveform": 0.85 if waveform_peaks else 0.0,
                 },
-                "analysis_method": "python_librosa_ffmpeg_preview_v1_2",
+                "analysis_method": "python_librosa_imageio_ffmpeg_preview_v1_3",
                 "analysis_engine_status": "python_connected",
                 "analysis_window_seconds": ANALYSIS_SECONDS,
             }
