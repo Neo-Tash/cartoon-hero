@@ -369,6 +369,184 @@ app.get("/api/health", (req, res) => {
   });
 });
 
+
+
+/* =========================
+   SLICKCOHERENCE MUSIC GENERATION BRIDGE
+   Current provider: slickcoherence_mock_provider
+   This safe mock provider lets the frontend use the same API routes that a real
+   external provider, and later a SlickCoherence-owned generation model, will use.
+========================= */
+const generationJobs = new Map();
+const generatedTracks = [];
+
+const buildGenerationJobId = () => `gen_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+const buildGeneratedTrackId = () => `track_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+
+const getMockGenerationStatus = (pollCount = 0) => {
+  if (pollCount >= 3) return "completed";
+  if (pollCount >= 2) return "finalizing";
+  if (pollCount >= 1) return "generating";
+  return "queued";
+};
+
+const getBpmFromStylePrompt = (stylePrompt = "") => {
+  const match = String(stylePrompt).match(/(\d{2,3})\s*bpm/i);
+  const bpm = match ? Number(match[1]) : 120;
+  return Number.isFinite(bpm) ? Math.max(60, Math.min(180, bpm)) : 120;
+};
+
+const getKeyFromStylePrompt = (stylePrompt = "") => {
+  const prompt = String(stylePrompt).toLowerCase();
+  const keys = [
+    "A Minor", "B Minor", "C Minor", "D Minor", "E Minor", "F Minor", "G Minor",
+    "A Major", "B Major", "C Major", "D Major", "E Major", "F Major", "G Major"
+  ];
+  const found = keys.find((key) => prompt.includes(key.toLowerCase()));
+  return found || "A Minor";
+};
+
+// POST /api/generate-music
+// Mock provider bridge. Future integrations should keep this public route stable
+// and swap the provider logic behind it.
+app.post("/api/generate-music", (req, res) => {
+  try {
+    const {
+      userId = "anonymous",
+      title = "Untitled SlickCoherence Track",
+      lyrics = "",
+      stylePrompt = "",
+      vocalGender = "mixed",
+      lyricsMode = "auto",
+      weirdness = 50,
+      styleInfluence = 50,
+      visibility = "Private"
+    } = req.body || {};
+
+    const jobId = buildGenerationJobId();
+    const job = {
+      jobId,
+      userId,
+      title,
+      lyrics,
+      stylePrompt,
+      vocalGender,
+      lyricsMode,
+      weirdness,
+      styleInfluence,
+      visibility,
+      provider: "slickcoherence_mock_provider",
+      createdAt: new Date().toISOString(),
+      status: "queued",
+      pollCount: 0
+    };
+
+    generationJobs.set(jobId, job);
+
+    res.json({
+      success: true,
+      provider: job.provider,
+      jobId,
+      status: job.status,
+      message: "Music generation job created successfully.",
+      estimatedTime: 30
+    });
+  } catch (err) {
+    console.error("Generate music bridge error:", err);
+    res.status(500).json({ success: false, error: "Music generation job failed" });
+  }
+});
+
+// GET /api/generation-status/:jobId
+// Mock status progression: queued -> generating -> finalizing -> completed.
+app.get("/api/generation-status/:jobId", (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const job = generationJobs.get(jobId);
+
+    if (!job) {
+      return res.status(404).json({ success: false, message: "Job not found" });
+    }
+
+    job.pollCount += 1;
+    job.status = getMockGenerationStatus(job.pollCount);
+    generationJobs.set(jobId, job);
+
+    if (job.status === "completed") {
+      const bpm = getBpmFromStylePrompt(job.stylePrompt);
+      const key = getKeyFromStylePrompt(job.stylePrompt);
+
+      return res.json({
+        success: true,
+        jobId,
+        status: "completed",
+        audioUrl: "/mock-audio/slickcoherence-preview.mp3",
+        coverUrl: null,
+        duration: "3:15",
+        bpm,
+        key,
+        provider: job.provider,
+        title: job.title,
+        lyrics: job.lyrics,
+        stylePrompt: job.stylePrompt,
+        vocalGender: job.vocalGender,
+        lyricsMode: job.lyricsMode,
+        weirdness: job.weirdness,
+        styleInfluence: job.styleInfluence,
+        visibility: job.visibility,
+        createdAt: job.createdAt
+      });
+    }
+
+    res.json({
+      success: true,
+      jobId,
+      status: job.status,
+      provider: job.provider,
+      message: `Generation status: ${job.status}`
+    });
+  } catch (err) {
+    console.error("Generation status bridge error:", err);
+    res.status(500).json({ success: false, error: "Generation status check failed" });
+  }
+});
+
+// POST /api/save-generated-track
+// In-memory save for bridge testing. Replace with Supabase persistence when the
+// generated_tracks collection/table is finalized.
+app.post("/api/save-generated-track", (req, res) => {
+  try {
+    const trackData = req.body || {};
+    const track = {
+      id: trackData.id || buildGeneratedTrackId(),
+      ...trackData,
+      savedAt: new Date().toISOString()
+    };
+
+    generatedTracks.unshift(track);
+
+    res.json({
+      success: true,
+      message: "Generated track saved successfully.",
+      track
+    });
+  } catch (err) {
+    console.error("Save generated track bridge error:", err);
+    res.status(500).json({ success: false, error: "Generated track save failed" });
+  }
+});
+
+// GET /api/my-generated-tracks/:userId
+app.get("/api/my-generated-tracks/:userId", (req, res) => {
+  const userId = req.params.userId;
+  const tracks = generatedTracks.filter((track) => !track.userId || track.userId === userId);
+
+  res.json({
+    success: true,
+    tracks
+  });
+});
+
 /* =========================
    LOGIN (TEMP)
 ========================= */
