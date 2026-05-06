@@ -100,7 +100,7 @@ export const getGenerationStatus = async (jobId) => {
       success: true,
       jobId,
       status: "completed",
-      audioUrl: "/mock-audio/slickcoherence-preview.mp3",
+      audioUrl: "/api/mock-audio/slickcoherence-preview.wav",
       coverUrl: null,
       duration: "3:15",
       bpm,
