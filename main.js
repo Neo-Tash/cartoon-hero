@@ -376,6 +376,69 @@ app.get("/api/health", (req, res) => {
 });
 
 
+/* =========================
+   MOCK GENERATED AUDIO PREVIEW
+
+   This route gives the mock provider a real playable preview file so the
+   frontend can test audio handling before an external provider or the future
+   SlickCoherence-owned model returns real generated audio URLs.
+========================= */
+const createMockPreviewWavBuffer = () => {
+  const sampleRate = 44100;
+  const seconds = 3;
+  const channels = 1;
+  const bitsPerSample = 16;
+  const totalSamples = sampleRate * seconds;
+  const dataSize = totalSamples * channels * (bitsPerSample / 8);
+  const buffer = Buffer.alloc(44 + dataSize);
+
+  buffer.write("RIFF", 0);
+  buffer.writeUInt32LE(36 + dataSize, 4);
+  buffer.write("WAVE", 8);
+  buffer.write("fmt ", 12);
+  buffer.writeUInt32LE(16, 16);
+  buffer.writeUInt16LE(1, 20);
+  buffer.writeUInt16LE(channels, 22);
+  buffer.writeUInt32LE(sampleRate, 24);
+  buffer.writeUInt32LE(sampleRate * channels * (bitsPerSample / 8), 28);
+  buffer.writeUInt16LE(channels * (bitsPerSample / 8), 32);
+  buffer.writeUInt16LE(bitsPerSample, 34);
+  buffer.write("data", 36);
+  buffer.writeUInt32LE(dataSize, 40);
+
+  for (let i = 0; i < totalSamples; i++) {
+    const t = i / sampleRate;
+    const fadeIn = Math.min(1, t / 0.08);
+    const fadeOut = Math.min(1, (seconds - t) / 0.12);
+    const envelope = Math.max(0, Math.min(fadeIn, fadeOut));
+    const kickPulse = Math.pow(Math.max(0, Math.sin(2 * Math.PI * 2 * t)), 10) * 0.28;
+    const tone = Math.sin(2 * Math.PI * 110 * t) * 0.24;
+    const shimmer = Math.sin(2 * Math.PI * 440 * t) * 0.055;
+    const sample = Math.max(-1, Math.min(1, (tone + shimmer + kickPulse) * envelope));
+    buffer.writeInt16LE(Math.round(sample * 32767), 44 + i * 2);
+  }
+
+  return buffer;
+};
+
+const sendMockPreviewAudio = (res) => {
+  const wav = createMockPreviewWavBuffer();
+  res.setHeader("Content-Type", "audio/wav");
+  res.setHeader("Content-Length", wav.length);
+  res.setHeader("Cache-Control", "public, max-age=300");
+  res.send(wav);
+};
+
+app.get("/api/mock-audio/slickcoherence-preview.wav", (req, res) => {
+  sendMockPreviewAudio(res);
+});
+
+// Legacy compatibility for older mock jobs that returned /mock-audio/slickcoherence-preview.mp3.
+app.get("/mock-audio/slickcoherence-preview.mp3", (req, res) => {
+  sendMockPreviewAudio(res);
+});
+
+
 
 /* =========================
    SLICKCOHERENCE MUSIC GENERATION PROVIDER ADAPTER SYSTEM
