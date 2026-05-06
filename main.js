@@ -513,6 +513,160 @@ app.get("/api/my-generated-tracks/:userId", async (req, res) => {
   }
 });
 
+
+
+/* =========================
+   GENERATED TRACK ANALYSIS BRIDGE
+
+   Step 5C Phase 1:
+   This route lets SlickCoherence analyze audio produced by the music-generation
+   provider layer. Today it supports the mock audio preview route. Later it will
+   analyze real provider audio URLs or SlickCoherence-owned model outputs.
+
+   This is the bridge that connects:
+   Create Music -> Generated Audio -> BPM/Key/Energy Analysis -> DJ Deck readiness.
+========================= */
+
+const resolveGeneratedAudioUrlForRequest = (req, audioUrl = "") => {
+  const safeUrl = String(audioUrl || "").trim();
+  const hostBase = `${req.protocol}://${req.get("host")}`;
+
+  if (!safeUrl) return `${hostBase}/api/mock-audio/slickcoherence-preview.wav`;
+  if (/^https?:\/\//i.test(safeUrl)) return safeUrl;
+  if (safeUrl.startsWith("/")) return `${hostBase}${safeUrl}`;
+  return `${hostBase}/api/${safeUrl.replace(/^\/+/, "")}`;
+};
+
+const getGeneratedAudioBufferForAnalysis = async (req, audioUrl = "") => {
+  const resolvedUrl = resolveGeneratedAudioUrlForRequest(req, audioUrl);
+
+  // Fast path for the current mock provider preview.
+  if (resolvedUrl.includes("/api/mock-audio/slickcoherence-preview.wav") || resolvedUrl.includes("/mock-audio/slickcoherence-preview.mp3")) {
+    return {
+      buffer: createMockPreviewWavBuffer(),
+      mimetype: "audio/wav",
+      originalname: "slickcoherence-generated-preview.wav",
+      resolvedUrl
+    };
+  }
+
+  const response = await fetch(resolvedUrl);
+
+  if (!response.ok) {
+    throw new Error(`Generated audio fetch failed ${response.status}`);
+  }
+
+  const arrayBuffer = await response.arrayBuffer();
+  return {
+    buffer: Buffer.from(arrayBuffer),
+    mimetype: response.headers.get("content-type") || "application/octet-stream",
+    originalname: resolvedUrl.split("/").pop() || "generated-track-audio",
+    resolvedUrl
+  };
+};
+
+const buildGeneratedTrackAnalysisRecord = ({ req, track = {}, analysis = {}, resolvedUrl, userId }) => ({
+  user_id: userId,
+  filename: track.title || track.filename || "Generated SlickCoherence Track",
+  bpm: analysis.bpm,
+  key: analysis.key,
+  energy: analysis.energy,
+  analysis_data: {
+    ...analysis,
+    generated_track: true,
+    generated_track_id: track.id || null,
+    generated_provider: track.provider || null,
+    generated_provider_label: track.providerLabel || null,
+    generated_audio_url: resolvedUrl,
+    source: "slickcoherence_generated_track_analysis_bridge"
+  },
+  file_url: resolvedUrl
+});
+
+app.post("/api/analyze-generated-track", async (req, res) => {
+  try {
+    const { track = {}, userId: bodyUserId, saveToAnalyses = true } = req.body || {};
+    const userId = bodyUserId || req.headers.authorization || track.userId || "admin@slickcoherence.com";
+    const audioUrl = track.audioUrl || req.body?.audioUrl;
+
+    const generatedAudio = await getGeneratedAudioBufferForAnalysis(req, audioUrl);
+    const analysisFile = {
+      buffer: generatedAudio.buffer,
+      mimetype: generatedAudio.mimetype,
+      originalname: generatedAudio.originalname
+    };
+
+    const pythonAnalysis = await analyzeWithPythonAudioEngine(analysisFile);
+    const analysis = pythonAnalysis || fallbackAnalyzeAudioBuffer(analysisFile);
+
+    let savedAnalysis = null;
+    let savedToAnalyses = false;
+
+    if (saveToAnalyses && userId) {
+      const record = buildGeneratedTrackAnalysisRecord({
+        req,
+        track,
+        analysis,
+        resolvedUrl: generatedAudio.resolvedUrl,
+        userId
+      });
+
+      const { data, error } = await supabase
+        .from("analyses")
+        .insert([record])
+        .select("*");
+
+      if (error) {
+        console.warn("Generated track analysis saved locally but Supabase insert failed:", error.message || error);
+      } else {
+        savedAnalysis = data?.[0] || null;
+        savedToAnalyses = true;
+
+        await supabase.from("activities").insert([{
+          user_id: userId,
+          action: "analyze_generated_track",
+          metadata: {
+            filename: track.title || generatedAudio.originalname,
+            generated_track_id: track.id || null,
+            provider: track.provider || null,
+            bpm: analysis.bpm,
+            key: analysis.key,
+            energy: analysis.energy,
+            file_url: generatedAudio.resolvedUrl
+          }
+        }]);
+      }
+    }
+
+    res.json({
+      success: true,
+      message: "Generated track analyzed successfully.",
+      analysis,
+      file_url: generatedAudio.resolvedUrl,
+      data: savedAnalysis,
+      savedToAnalyses,
+      djDeckReady: true,
+      generatedTrack: {
+        ...track,
+        audioUrl: generatedAudio.resolvedUrl,
+        bpm: analysis.bpm,
+        key: analysis.key,
+        energy: analysis.energy,
+        analysisData: analysis,
+        analysisStatus: "Analyzed",
+        djDeckReady: true
+      }
+    });
+  } catch (err) {
+    console.error("Analyze generated track error:", err);
+    res.status(500).json({
+      success: false,
+      error: "Generated track analysis failed",
+      message: err.message || "Unable to analyze generated track"
+    });
+  }
+});
+
 /* =========================
    LOGIN (TEMP)
 ========================= */
