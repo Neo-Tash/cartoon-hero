@@ -1,5 +1,5 @@
 [phases.setup]
-nixPkgs = ["python311", "libsndfile", "gcc"]
+nixPkgs = ["python313", "libsndfile", "gcc"]
 
 [phases.install]
 cmds = [
